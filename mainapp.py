@@ -49,28 +49,34 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # data loading logic
-# hybrid approach: check repo first, fall back to upload
+# adjusted logic: auto-load if available, BUT always allow manual override
 default_filename = "qs_snapshot.json"
 data = None
 
 with st.sidebar:
     st.header("Data Source")
     
-    # check if file exists in the repo (auto-load)
+    # 1. attempt to auto-load from repository
     if os.path.exists(default_filename):
-        with open(default_filename, 'r') as f:
-            data = json.load(f)
-        st.success(f"✅ Auto-loaded data from repository.")
+        try:
+            with open(default_filename, 'r') as f:
+                data = json.load(f)
+            st.success("✅ Auto-loaded data from repository.")
+        except Exception as e:
+            st.error(f"Error reading repo file: {e}")
+            
+    # 2. always show uploader (to allow overriding the repo file)
+    uploaded_file = st.file_uploader("Upload Manual Snapshot (Overrides Auto-load)", type="json")
+    
+    if uploaded_file:
+        data = json.load(uploaded_file)
+        st.info("📂 Using manually uploaded file.")
         
-    # otherwise, ask for manual upload
-    else:
-        st.warning(f"File '{default_filename}' not found in repository.")
-        uploaded_file = st.file_uploader("Upload 'qs_snapshot.json'", type="json")
-        if uploaded_file:
-            data = json.load(uploaded_file)
-        st.info("💡 Don't have the file? Run the extraction script in AWS CloudShell first.")
+    if data is None:
+        st.warning("⚠️ No data found. Please upload a snapshot.")
+        st.stop()
 
-# new main logic
+# main logic
 if data is not None:
     
     # 1 process dashboards into a dataFrame
@@ -80,11 +86,11 @@ if data is not None:
     df_data = pd.DataFrame(data.get('datasets', []))
 
     # --- CRITICAL CHECK: IS DATA EMPTY? ---
-    if df_data.empty or df_dash.empty:
-        st.error("⚠️ The uploaded file is empty or missing data.")
+    if df_data.empty and df_dash.empty:
+        st.error("⚠️ The loaded file is empty or missing data.")
         st.warning(f"File analysis: Found {len(df_dash)} dashboards and {len(df_data)} datasets.")
-        st.info("Please re-run the AWS CloudShell script and ensure it finds your resources before downloading.")
-        st.stop() # to hlt the app here so it doesn't crash below
+        st.info("Check: Did you run the CloudShell script in the correct AWS Region?")
+        st.stop() 
     # ------------
 
     # helper: dictionary to look up dataset Name by ARN
@@ -93,8 +99,10 @@ if data is not None:
     # 3 calculating dependencies
     # making list of all ARNs that are actually used in dashboards
     all_used_arns = []
-    for used_list in df_dash['used_datasets']:
-        all_used_arns.extend(used_list)
+    # defensive check: ensure 'used_datasets' column exists
+    if 'used_datasets' in df_dash.columns:
+        for used_list in df_dash['used_datasets']:
+            all_used_arns.extend(used_list)
     
     unique_used_arns = set(all_used_arns)
     
@@ -117,21 +125,24 @@ if data is not None:
         st.subheader("Downstream Impact Checker")
         st.write("If I change a dataset, what breaks?")
         
-        # dropdown to pick a dataset
-        selected_dataset_name = st.selectbox("Select a Dataset to check:", df_data['name'].sort_values())
-        
-        # get the ARN for the selected name
-        selected_arn = df_data[df_data['name'] == selected_dataset_name]['arn'].values[0]
-        
-        # find which dashboards use this ARN
-        # logic: look at every dashboard, check if selected_arn is in its 'used_datasets' list
-        affected = df_dash[df_dash['used_datasets'].apply(lambda x: selected_arn in x)]
-        
-        if not affected.empty:
-            st.error(f"⚠️ Warning! Modifying '{selected_dataset_name}' will impact {len(affected)} Dashboard(s):")
-            st.dataframe(affected[['name', 'id']], hide_index=True, use_container_width=True)
-        else:
-            st.success(f"✅ Safe. '{selected_dataset_name}' is not currently used by any Dashboard.")
+        if not df_data.empty:
+            # dropdown to pick a dataset
+            selected_dataset_name = st.selectbox("Select a Dataset to check:", df_data['name'].sort_values())
+            
+            # get the ARN for the selected name
+            selected_arn = df_data[df_data['name'] == selected_dataset_name]['arn'].values[0]
+            
+            # find which dashboards use this ARN
+            if not df_dash.empty and 'used_datasets' in df_dash.columns:
+                affected = df_dash[df_dash['used_datasets'].apply(lambda x: selected_arn in x)]
+                
+                if not affected.empty:
+                    st.error(f"⚠️ Warning! Modifying '{selected_dataset_name}' will impact {len(affected)} Dashboard(s):")
+                    st.dataframe(affected[['name', 'id']], hide_index=True, use_container_width=True)
+                else:
+                    st.success(f"✅ Safe. '{selected_dataset_name}' is not currently used by any Dashboard.")
+            else:
+                st.info("No dashboard data available to check.")
 
     # tab 2: clean-up
     with tab2:
@@ -169,13 +180,11 @@ if data is not None:
             ))
             
             # 2 adding edges (dataset -> dashboard)
-            for arn in row['used_datasets']:
-                # lookup the dataset name from the ARN
-                ds_name = arn_to_name.get(arn, "Unknown Dataset")
-                
-                # add the dataset node (blue) if not already added logic happens internally in agraph usually, 
-                # but let's ensure we add edges carefully
-                edges.append(Edge(source=ds_name, target=row['name'], color="#bdc3c7"))
+            if 'used_datasets' in row:
+                for arn in row['used_datasets']:
+                    # lookup the dataset name from the ARN
+                    ds_name = arn_to_name.get(arn, "Unknown Dataset")
+                    edges.append(Edge(source=ds_name, target=row['name'], color="#bdc3c7"))
 
         # 3 add dataset nodes (blue) - only the used ones to keep graph readable
         for arn in unique_used_arns:
