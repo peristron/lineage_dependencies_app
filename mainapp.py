@@ -1,10 +1,44 @@
 import streamlit as st
 import pandas as pd
 import json
+import os
 from streamlit_agraph import agraph, Node, Edge, Config
 
 # page configuration
 st.set_page_config(page_title="QuickSight Governance Tool", layout="wide")
+
+# ---------------------------------------------------------
+# security configuration
+# ---------------------------------------------------------
+
+# security function
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    # if password was already correct in this session, return True
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # show input for password
+    st.header("🔒 Login Required")
+    password = st.text_input("Enter App Password", type="password")
+    
+    if st.button("Login"):
+        # this checks the "APP_PASSWORD" key in your streamlit secrets
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("😕 Password incorrect")
+    return False
+
+# stop the app execution here if password is not correct
+if not check_password():
+    st.stop()
+
+# ---------------------------------------------------------
+# main application
+# ---------------------------------------------------------
 
 # title and CSS
 st.title("🛡️ QuickSight Governance & Lineage")
@@ -14,16 +48,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# sidebar, file upload
+# data loading logic
+# hybrid approach: check repo first, fall back to upload
+default_filename = "qs_snapshot.json"
+data = None
+
 with st.sidebar:
-    st.header("1. Upload Data")
-    uploaded_file = st.file_uploader("Upload 'qs_snapshot.json'", type="json")
-    st.info("💡 Don't have the file? Run the extraction script in AWS CloudShell first.")
+    st.header("Data Source")
+    
+    # check if file exists in the repo (auto-load)
+    if os.path.exists(default_filename):
+        with open(default_filename, 'r') as f:
+            data = json.load(f)
+        st.success(f"✅ Auto-loaded data from repository.")
+        
+    # otherwise, ask for manual upload
+    else:
+        st.warning(f"File '{default_filename}' not found in repository.")
+        uploaded_file = st.file_uploader("Upload 'qs_snapshot.json'", type="json")
+        if uploaded_file:
+            data = json.load(uploaded_file)
+        st.info("💡 Don't have the file? Run the extraction script in AWS CloudShell first.")
 
 # main logic
-if uploaded_file is not None:
-    # loading the data
-    data = json.load(uploaded_file)
+if data is not None:
     
     # 1 process dashboards into a dataFrame
     df_dash = pd.DataFrame(data['dashboards'])
@@ -102,7 +150,7 @@ if uploaded_file is not None:
         nodes = []
         edges = []
         
-        # adding dashboard nodes (Orange)
+        # adding dashboard nodes (orange)
         for _, row in df_dash.iterrows():
             nodes.append(Node(
                 id=row['name'], 
@@ -117,7 +165,7 @@ if uploaded_file is not None:
                 # lookup the dataset name from the ARN
                 ds_name = arn_to_name.get(arn, "Unknown Dataset")
                 
-                # add the dataset node (Blue) if not already added logic happens internally in agraph usually, 
+                # add the dataset node (blue) if not already added logic happens internally in agraph usually, 
                 # but let's ensure we add edges carefully
                 edges.append(Edge(source=ds_name, target=row['name'], color="#bdc3c7"))
 
@@ -129,7 +177,7 @@ if uploaded_file is not None:
                 label=ds_name, 
                 size=15, 
                 shape="dot",
-                color="#00BFFF" # Blue
+                color="#00BFFF" # blue
             ))
 
         # config for the physics engine
@@ -144,5 +192,5 @@ if uploaded_file is not None:
         return_value = agraph(nodes=nodes, edges=edges, config=config)
 
 else:
-    # start screen instruction
-    st.info("👈 Upload your JSON file in the sidebar to start.")
+    # start screen instruction if no data loaded yet
+    st.info("👈 Please verify data source in sidebar.")
