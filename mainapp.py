@@ -70,18 +70,26 @@ with st.sidebar:
             data = json.load(uploaded_file)
         st.info("💡 Don't have the file? Run the extraction script in AWS CloudShell first.")
 
-# main logic
+# new main logic
 if data is not None:
     
     # 1 process dashboards into a dataFrame
-    df_dash = pd.DataFrame(data['dashboards'])
+    df_dash = pd.DataFrame(data.get('dashboards', []))
     
     # 2 process datasets into a dataFrame
-    df_data = pd.DataFrame(data['datasets'])
+    df_data = pd.DataFrame(data.get('datasets', []))
+
+    # --- CRITICAL CHECK: IS DATA EMPTY? ---
+    if df_data.empty or df_dash.empty:
+        st.error("⚠️ The uploaded file is empty or missing data.")
+        st.warning(f"File analysis: Found {len(df_dash)} dashboards and {len(df_data)} datasets.")
+        st.info("Please re-run the AWS CloudShell script and ensure it finds your resources before downloading.")
+        st.stop() # to hlt the app here so it doesn't crash below
+    # ------------
 
     # helper: dictionary to look up dataset Name by ARN
     arn_to_name = dict(zip(df_data['arn'], df_data['name']))
-    
+ 
     # 3 calculating dependencies
     # making list of all ARNs that are actually used in dashboards
     all_used_arns = []
